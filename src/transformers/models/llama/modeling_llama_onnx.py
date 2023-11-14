@@ -287,18 +287,17 @@ class LlamaAttention(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        use_cache: bool = False,
     ):
         value_states = value_states_tmp
         kv_seq_len = key_states_tmp.shape[-3]
-        if past_key_value is not None:
+        if past_key_value is not None and past_key_value[0] is not None:
             kv_seq_len += past_key_value[0].shape[-3]
         if past_key_value is not None:
             cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len - 1)
         else:
             cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states_tmp, key_states_tmp, cos, sin, position_ids)
-        past_kv = (key_states, value_states) if use_cache else None
+        past_kv = (key_states, value_states)
         if past_key_value is not None:
             key_states = torch.cat([past_key_value[0], key_states], dim=1)
             value_states = torch.cat([past_key_value[1], value_states], dim=1)
@@ -333,7 +332,6 @@ class LlamaAttention(nn.Module):
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
-        use_cache: bool = False,
     ):
         query_states_tmp, key_states_tmp, value_states_tmp = self.before_attention(hidden_states)
 
@@ -344,12 +342,12 @@ class LlamaAttention(nn.Module):
             attention_mask,
             position_ids,
             past_key_value,
-            use_cache,
         )
 
         attn_output = self.after_attention(attn_output_tmp)
         if not output_attentions:
             attn_weights = None
+
         return attn_output, attn_weights, past_kv
 
     def forward(
@@ -381,8 +379,6 @@ class LlamaAttention(nn.Module):
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
         past_kv = (key_states, value_states) if use_cache else None
         if past_key_value is not None:
-            breakpoint()
-            
             key_states = torch.cat([past_key_value[0], key_states], dim=1)
             value_states = torch.cat([past_key_value[1], value_states], dim=1)
 
@@ -425,7 +421,7 @@ class LlamaDecoderLayer(nn.Module):
         query_states_tmp, key_states_tmp, value_states_tmp = self.self_attn.before_attention(
             hidden_states=hidden_states,
         )
-        return hidden_states, query_states_tmp, key_states_tmp, value_states_tmp
+        return query_states_tmp, key_states_tmp, value_states_tmp
 
     def do_attention(
         self,
@@ -435,7 +431,6 @@ class LlamaDecoderLayer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        use_cache: bool = False,
     ):
         attn_output_tmp, attn_weights, past_kv = self.self_attn.do_attention(
             query_states_tmp=query_states_tmp,
@@ -444,13 +439,11 @@ class LlamaDecoderLayer(nn.Module):
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_value=past_key_value,
-            use_cache=use_cache,
         )
         return attn_output_tmp, attn_weights, past_kv
 
     def after_attention(
         self,
-        hidden_states: torch.Tensor,
         residual: torch.Tensor,
         attn_output_tmp,
     ):
@@ -470,10 +463,9 @@ class LlamaDecoderLayer(nn.Module):
         attention_mask: Optional[torch.Tensor] = None,
         position_ids: Optional[torch.LongTensor] = None,
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
-        use_cache: Optional[bool] = False,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         residual = hidden_states
-        hidden_states, query_states_tmp, key_states_tmp, value_states_tmp = self.before_attention(
+        query_states_tmp, key_states_tmp, value_states_tmp = self.before_attention(
             hidden_states,
         )
 
@@ -481,14 +473,14 @@ class LlamaDecoderLayer(nn.Module):
             query_states_tmp,
             key_states_tmp,
             value_states_tmp,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            use_cache=use_cache,
+            attention_mask,
+            position_ids,
+            past_key_value,
         )
 
-        hidden_states = self.after_attention(hidden_states, residual, attn_output_tmp)
-        return hidden_states, past_kv
+        hidden_states_out = self.after_attention(residual, attn_output_tmp)
+
+        return hidden_states_out, past_kv
 
     def forward(
         self,
@@ -512,13 +504,12 @@ class LlamaDecoderLayer(nn.Module):
                 (see `past_key_values`).
             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
-        if eval(os.environ.get("MULTI_BATCH", 'False')):
+        if eval(os.environ.get("MULTI_BATCH", "False")):
             return self.splited_forward(
                 hidden_states=hidden_states,
                 attention_mask=attention_mask,
                 position_ids=position_ids,
                 past_key_value=past_key_value,
-                use_cache=use_cache,
             )
 
         residual = hidden_states
